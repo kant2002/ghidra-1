@@ -27,6 +27,7 @@ import ghidra.app.events.ProgramLocationPluginEvent;
 import ghidra.app.events.ProgramSelectionPluginEvent;
 import ghidra.app.plugin.core.codebrowser.CodeBrowserPlugin;
 import ghidra.app.script.GhidraScriptConstants;
+import ghidra.app.services.GoToService;
 import ghidra.framework.*;
 import ghidra.framework.cmd.Command;
 import ghidra.framework.model.UndoableDomainObject;
@@ -47,7 +48,8 @@ import ghidra.util.exception.AssertException;
 import ghidra.util.exception.RollbackException;
 import junit.framework.AssertionFailedError;
 import utility.application.ApplicationLayout;
-import utility.function.*;
+import utility.function.ExceptionalCallback;
+import utility.function.ExceptionalFunction;
 
 public abstract class AbstractGhidraHeadlessIntegrationTest extends AbstractDockingTest {
 
@@ -107,7 +109,7 @@ public abstract class AbstractGhidraHeadlessIntegrationTest extends AbstractDock
 	 * if found.  If no language is found, an exception will be thrown.
 	 * @param oldLanguageName old language name string
 	 * @return the language compiler and spec
-	 * @throws LanguageNotFoundException 
+	 * @throws LanguageNotFoundException if the language is not found
 	 */
 	public static LanguageCompilerSpecPair getLanguageCompilerSpecPair(String oldLanguageName)
 			throws LanguageNotFoundException {
@@ -194,7 +196,14 @@ public abstract class AbstractGhidraHeadlessIntegrationTest extends AbstractDock
 		}
 	}
 
-	public static <E extends Exception> void tx(Program p, ExceptionalCallback<E> c) throws E {
+	/**
+	 * Provides a convenient method for modifying the current program, handling the transaction
+	 * logic. 
+	 * 
+	 * @param p the program
+	 * @param c the code to execute
+	 */
+	public static <E extends Exception> void tx(Program p, ExceptionalCallback<E> c) {
 		int txId = p.startTransaction("Test - Function in Transaction");
 		boolean commit = true;
 		try {
@@ -202,9 +211,9 @@ public abstract class AbstractGhidraHeadlessIntegrationTest extends AbstractDock
 			p.flushEvents();
 			waitForSwing();
 		}
-		catch (RollbackException e) {
+		catch (Exception e) {
 			commit = false;
-			throw e;
+			failWithException("Exception modifying program '" + p.getName() + "'", e);
 		}
 		finally {
 			p.endTransaction(txId, commit);
@@ -213,27 +222,14 @@ public abstract class AbstractGhidraHeadlessIntegrationTest extends AbstractDock
 
 	/**
 	 * Provides a convenient method for modifying the current program, handling the transaction
-	 * logic 
+	 * logic.   This method is calls {@link #tx(Program, ExceptionalCallback)}, but helps with
+	 * semantics.
 	 * 
-	 * @param program the program
-	 * @param callback the code to execute
+	 * @param p the program
+	 * @param c the code to execute
 	 */
-	public <E extends Exception> void modifyProgram(Program program,
-			ExceptionalConsumer<Program, E> callback) {
-		assertNotNull("Program cannot be null", program);
-
-		boolean commit = false;
-		int tx = program.startTransaction("Test");
-		try {
-			callback.accept(program);
-			commit = true;
-		}
-		catch (Exception e) {
-			failWithException("Exception modifying program '" + program.getName() + "'", e);
-		}
-		finally {
-			program.endTransaction(tx, commit);
-		}
+	public static <E extends Exception> void modifyProgram(Program p, ExceptionalCallback<E> c) {
+		tx(p, c);
 	}
 
 	/**
@@ -244,7 +240,7 @@ public abstract class AbstractGhidraHeadlessIntegrationTest extends AbstractDock
 	 * @param f the function for modifying the program and creating the desired result
 	 * @return the result
 	 */
-	public <R, E extends Exception> R createInProgram(Program program,
+	public <R, E extends Exception> R modifyProgram(Program program,
 			ExceptionalFunction<Program, R, E> f) {
 		assertNotNull("Program cannot be null", program);
 
@@ -388,6 +384,14 @@ public abstract class AbstractGhidraHeadlessIntegrationTest extends AbstractDock
 	}
 
 	public void goTo(PluginTool tool, Program p, Address addr) {
+
+		GoToService goTo = tool.getService(GoToService.class);
+		if (goTo != null) {
+			goTo.goTo(addr);
+			waitForSwing();
+			return;
+		}
+
 		tool.firePluginEvent(
 			new ProgramLocationPluginEvent("Test", new ProgramLocation(p, addr), p));
 		waitForSwing();
